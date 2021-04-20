@@ -1,0 +1,220 @@
+---
+title: 'Video 2: Predictive modeling in R with tidymodels and NFL attendance'
+author: "Josh Erickson"
+date: "4/20/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(silgelib)
+library(scales)
+library(lubridate)
+theme_set(theme_plex())
+```
+
+## Explore data
+
+We'll build a simple model using [NFL attendance from #tidytuesday](https://github.com/rfordatascience/tidytuesday/blob/master/data/2020/2020-02-04/readme.md). 
+
+Read in the data.
+
+```{r}
+
+attendance <- readr::read_csv('https://raw.githubusercontent.com/rfordatascience/tidytuesday/master/data/2020/2020-02-04/attendance.csv')
+standings <- readr::read_csv('https://raw.githubusercontent.com/rfordatascience/tidytuesday/master/data/2020/2020-02-04/standings.csv')
+
+attendance_join <- attendance %>% left_join(standings, by = c('year', 'team_name', 'team'))
+
+```
+
+EDA with this data, it's important!
+
+```{r}
+attendance_join %>% mutate(team_name = fct_reorder(team_name, weekly_attendance, median, na.rm = T)) %>% 
+  ggplot(aes(team_name, weekly_attendance, fill = playoffs)) + geom_boxplot(outlier.alpha = 0.5) + coord_flip() + scale_y_continuous(labels = comma) + facet_wrap(~year, scales = 'free')
+
+
+attendance_join %>% mutate( year_week = paste0(year,'-', week),team_name = fct_reorder(team_name, -weekly_attendance, median, na.rm = T)) %>% 
+  ggplot(aes(year_week, weekly_attendance, color = team_name, group = team_name)) +
+  geom_line(show.legend = F) + geom_smooth(method = 'lm', se = FALSE,show.legend = F) + scale_y_continuous(labels = comma) +
+  facet_wrap(~team_name)
+
+
+```
+
+Looking at margin of victory and playoff occurrence?
+
+```{r}
+attendance_join %>% distinct(team_name, year, margin_of_victory, playoffs) %>%  ggplot(aes(margin_of_victory, fill = playoffs)) + geom_histogram(position = 'identity', alpha = 0.7)
+```
+ 
+
+```{r}
+attendance_join %>% 
+  mutate(week = factor(week)) %>% 
+  ggplot(aes(week, weekly_attendance, fill = week)) + 
+  geom_boxplot(show.legend = F) + facet_wrap(~playoffs)
+```
+
+Now let's build the dataset!
+
+```{r}
+attendance_df <- attendance_join %>% 
+  filter(!is.na(weekly_attendance)) %>% 
+  select(weekly_attendance, team_name, year, week,
+         margin_of_victory, strength_of_schedule, playoffs)
+```
+
+## Train model
+
+Load tidymodels!
+
+```{r}
+library(tidymodels)
+
+attendance_split <- attendance_df %>% 
+  initial_split(strata = playoffs)
+
+
+nfl_train <- training(attendance_split)
+nfl_test <- testing(attendance_split)
+```
+
+Now let's build some models. Linear regression and random forest. More than the normal `lm()` but will be a foundation for futher tidymodel workflows.
+
+```{r}
+#hey train lm!!!
+#advantage is there are a lot of different 'engine/model' types
+lm_spec <- linear_reg() %>% 
+  set_engine(engine = 'lm')
+
+lm_fit <- lm_spec %>% fit(weekly_attendance ~ ., data = nfl_train)
+
+```
+
+What's nice is you can `tidy()` it.
+
+```{r}
+tidy(lm_fit) %>%  arrange(-estimate)
+```
+
+Now let's do random forest.
+
+```{r}
+rf_spec <- rand_forest(mode = 'regression') %>% 
+  set_engine('ranger')
+
+rf_fit <- rf_spec %>% fit(weekly_attendance ~ ., data = nfl_train)
+
+
+```
+
+Yeah we trained our models!
+
+##Evaluate model
+
+Let's compare how our training data did by using our test data.
+
+```{r}
+results_train <- lm_fit %>% predict(new_data = nfl_train) %>% 
+  mutate(truth = nfl_train$weekly_attendance,
+         model = 'lm') %>% 
+  bind_rows(rf_fit %>% predict(new_data = nfl_train) %>% 
+  mutate(truth = nfl_train$weekly_attendance,
+         model = 'rf'))
+
+results_test <- lm_fit %>% predict(new_data = nfl_test) %>% 
+  mutate(truth = nfl_test$weekly_attendance,
+         model = 'lm') %>% 
+  bind_rows(rf_fit %>% predict(new_data = nfl_test) %>% 
+  mutate(truth = nfl_test$weekly_attendance,
+         model = 'rf'))
+```
+
+Now let's check the results with RMSE.
+
+```{r}
+results_train %>% 
+  group_by(model) %>% 
+  rmse(truth = truth, estimate = .pred)
+
+results_test %>% 
+  group_by(model) %>% 
+  rmse(truth = truth, estimate = .pred)
+```
+
+As always IMO, random forest overfits... Bias/variance trade-offs.
+
+```{r}
+results_test %>% 
+  mutate(train = 'testing') %>% 
+  bind_rows(results_train %>% 
+              mutate(train = 'training')) %>% 
+  ggplot(aes(truth, .pred, color = model)) + 
+  geom_abline() + geom_point(alpha = 0.2) + facet_wrap(~train)
+```
+
+
+# Let's try again
+
+Now let's use resampling!
+
+```{r}
+set.seed(123)
+
+nfl_folds <- vfold_cv(nfl_train,strata = playoffs)
+
+rf_result <- fit_resamples(
+  rf_spec,
+  weekly_attendance ~ ., 
+  nfl_folds,
+  control = control_resamples(save_pred = TRUE)
+)
+
+rf_result %>% collect_metrics()
+```
+
+The power of resampling!
+
+
+```{r}
+rf_result %>% 
+  unnest(.predictions) %>% 
+  ggplot(aes(weekly_attendance, .pred, color = id)) + 
+  geom_point(alpha = 0.4) + scale_x_continuous(labels = comma) + scale_y_continuous(labels = comma) + geom_abline()
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
