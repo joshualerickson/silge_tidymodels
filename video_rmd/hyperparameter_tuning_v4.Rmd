@@ -1,0 +1,128 @@
+---
+title: 'Video 4: Hyperparameter Tuning'
+author: "Josh Erickson"
+date: "4/26/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+library(tidyverse)
+
+theme_set(theme_bw())
+```
+
+Let's tune hyperparameters using tidymodels for [food consumption data from this week's #tidytuesday data](https://github.com/rfordatascience/tidytuesday/blob/master/data/2020/2020-02-18/readme.md)
+
+
+## Explore Data
+
+```{r}
+food_consumption <- readr::read_csv('https://raw.githubusercontent.com/rfordatascience/tidytuesday/master/data/2020/2020-02-18/food_consumption.csv')
+
+food_consumption
+
+```
+
+Going to predict whether country is in Asia or rest of the world. Pretty sweet!
+
+```{r}
+library(countrycode)
+install.packages('janitor')
+
+food <- food_consumption %>% 
+  mutate(continent = countrycode(country, 
+                                 origin = 'country.name',
+                                 destination = 'continent')) %>% 
+  select(-co2_emmission) %>% 
+  pivot_wider(names_from = food_category, values_from = consumption) %>% 
+  janitor::clean_names() %>% 
+  mutate(asia = case_when(continent == 'Asia' ~ 'Asia',
+                          TRUE ~ 'Other')) %>% 
+  select(-country, -continent) %>% 
+  mutate(across(where(is.character), factor))
+  
+
+```
+
+Now let's look at the variables in a bivariate graph.
+
+```{r}
+library(GGally)
+
+ggscatmat(food, columns = 1:11, color = 'asia', alpha = 0.75)
+GGally::ggpairs(food,mapping = aes(color = asia, alpha = 0.75), columns = 1:11)
+```
+
+
+## Tune hyperparameters
+
+```{r}
+library(tidymodels)
+set.seed(1223)
+
+food_boot <- bootstraps(food, times = 30)
+
+#spec is the model spec or workflow
+rf_spec <- rand_forest(mode = 'classification',
+            mtry = tune(),
+            trees = 1000,
+            min_n = tune()) %>% 
+  set_engine(engine = 'randomForest')
+
+#remember recipe is essentially a traditional model formula e.g. asia ~ .
+rf_grid <- tune_grid(rf_spec,
+                     asia ~ .,
+          resamples = food_boot)
+
+```
+
+Now let's collect the metrics.
+
+```{r}
+rf_grid %>% 
+  collect_metrics()
+
+#just show the best
+rf_grid %>% 
+  show_best('roc_auc')
+
+rf_grid %>% 
+  show_best('accuracy')
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
