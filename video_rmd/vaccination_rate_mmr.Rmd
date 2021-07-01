@@ -1,0 +1,177 @@
+---
+title: 'Video 5: Vaccination Rates'
+author: "Josh Erickson"
+date: "6/30/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+library(tidyverse)
+
+theme_set(theme_bw())
+```
+
+Let's train models using tidymodels for [MMR vaccination data from #tidytuesday data](https://github.com/rfordatascience/tidytuesday/blob/master/data/2020/2020-02-25/readme.md)
+
+
+## Explore Data
+
+```{r}
+# Get the Data
+
+measles <- readr::read_csv('https://raw.githubusercontent.com/rfordatascience/tidytuesday/master/data/2020/2020-02-25/measles.csv')
+
+# Or read in with tidytuesdayR package (https://github.com/thebioengineer/tidytuesdayR)
+# PLEASE NOTE TO USE 2020 DATA YOU NEED TO USE tidytuesdayR version ? from GitHub
+
+# Either ISO-8601 date or year/week works!
+
+# Install via devtools::install_github("thebioengineer/tidytuesdayR")
+tuesdata <- tidytuesdayR::tt_load('2020-02-25')
+tuesdata <- tidytuesdayR::tt_load(2020, week = 9)
+
+
+measles <- tuesdata$measles
+
+```
+Now explore
+```{r}
+measles_df <- measles %>% 
+  filter(mmr > 0) %>% 
+  transmute(state,
+            mmr_threshold = case_when(mmr > 95 ~"Above",
+                                           TRUE ~ "Below")) %>% 
+  mutate(across(where(is.character), factor))
+
+library(skimr)
+
+skim(measles_df)
+```
+
+```{r}
+measles_df %>% group_by(state) %>% 
+  summarise(mmr = mean(mmr_threshold == "Above")) %>% 
+  mutate(state = fct_reorder(state, mmr)) %>% 
+  ggplot(aes(state, mmr, fill = state)) +
+  geom_col(show.legend = F) +
+  scale_y_continuous(labels = scales::percent_format()) +
+  coord_flip()
+```
+
+## Working with models 
+
+```{r}
+library(tidymodels)
+
+glm_fit <- logistic_reg() %>% 
+  set_engine('glm') %>% 
+  fit(mmr_threshold ~ state, data = measles_df)
+
+tidy(glm_fit)
+```
+
+logistic models... what the heck are they? what's great with tidymodels is how consistent and predictable it is to get out different kinds of predications. Good for talkng wit stakeholders (transparancy).
+
+Predict on other data.
+```{r}
+new_schools <- tibble(state = unique(measles_df$state))
+
+mean_pred <- predict(glm_fit,
+                     new_data = new_schools,
+                     type = 'prob')
+
+conf_int <- predict(glm_fit,
+                     new_data = new_schools,
+                     type = 'conf_int')
+schools_result <- new_schools %>% 
+  bind_cols(mean_pred) %>% 
+  bind_cols(conf_int)
+```
+
+Now make a nice viz for this.
+
+```{r}
+schools_result %>% 
+  mutate(state = fct_reorder(state, .pred_Above)) %>% 
+  ggplot(aes(state, .pred_Above, fill = state)) +
+  geom_col(show.legend = F) +
+  geom_errorbar(aes(ymin = .pred_lower_Above,
+                    ymax = .pred_upper_Above), color = 'gray30') +
+  scale_y_continuous(labels = scales::percent_format()) +
+  coord_flip()
+```
+
+## Trying another model
+
+```{r}
+library(rstanarm)
+options(mc.cores = parallel::detectCores())
+
+prior_dist <- student_t(df = 5)
+
+stan_fit <- logistic_reg() %>% 
+  set_engine('stan',
+             prior = prior_dist,
+             prior_intercept = prior_dist) %>% 
+  fit(mmr_threshold ~state, data = measles_df)
+```
+
+```{r}
+bayes_pred <- predict(stan_fit,
+                     new_data = new_schools,
+                     type = 'prob')
+
+bayes_int <- predict(stan_fit,
+                     new_data = new_schools,
+                     type = 'conf_int')
+bayes_result <- new_schools %>% 
+  bind_cols(bayes_pred) %>% 
+  bind_cols(bayes_int)
+
+schools_result %>% 
+  mutate(model = 'glm') %>% 
+  bind_rows(bayes_result %>% 
+              mutate(model = 'stan')) %>% 
+  mutate(state = fct_reorder(state, .pred_Above)) %>% 
+  ggplot(aes(state, .pred_Above, color = model)) +
+  geom_point(size = 4) +
+  geom_errorbar(aes(ymin = .pred_lower_Above,
+                    ymax = .pred_upper_Above)) +
+  scale_y_continuous(labels = scales::percent_format()) +
+  coord_flip()
+```
+
+Explore linear regression and get intervals using mtcars.
+
+```{r}
+ggplot(mtcars,aes(disp, mpg)) + geom_point() + geom_smooth(method = 'lm')
+```
+
+Now let's see if we can recreate the conf intervals...
+```{r}
+lin_cars <- linear_reg() %>% 
+  set_engine('lm') %>% 
+  fit(disp~mpg, data = mtcars)
+
+tidy(lin_cars)
+
+lm_pred <- predict(lin_cars,
+                     new_data = mtcars)
+
+lm_int <- predict(lin_cars,
+                     new_data = mtcars,
+                     type = 'conf_int')
+lm_result <- mtcars %>% 
+  bind_cols(lm_pred) %>% 
+  bind_cols(lm_int)
+
+lm_result %>% ggplot(aes(mpg, disp)) + geom_point() + geom_line()  +
+  geom_ribbon(aes(ymin = .pred_lower, ymax = .pred_upper))+ geom_smooth(method = 'lm', alpha = 0.5)
+```
+
+Pretty sweet!

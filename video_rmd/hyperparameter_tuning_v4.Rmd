@@ -95,7 +95,34 @@ rf_grid %>%
   show_best('accuracy')
 ```
 
+Now let's look at rice between other and world.
 
+```{r}
+#spec is the model spec or workflow
+lm_spec <- linear_reg(mode = 'regression',
+                      penalty = tune()) %>% 
+  set_engine(engine = 'glmnet')
+
+# recipe 
+
+lm_rec <- recipe(rice ~ ., data = food %>% filter(asia == 'Asia')) %>% 
+  step_rm(asia)
+
+set.seed(1223)
+
+filt_boot <- bootstraps(food %>% filter(asia == 'Asia'), times = 30)
+
+#remember recipe is essentially a traditional model formula e.g. asia ~ .
+lm_grid <- tune_grid(lm_spec,
+                     lm_rec,
+          resamples = filt_boot)
+
+lm_grid %>% 
+  collect_metrics()
+
+lm_grid %>% 
+  show_best('rsq')
+```
 
 
 
