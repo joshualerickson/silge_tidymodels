@@ -1,0 +1,103 @@
+---
+title: 'Video 7: beer brew using bootstrapping'
+author: "Josh Erickson"
+date: "7/3/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+```{r}
+library(tidyverse)
+
+theme_set(theme_bw())
+```
+
+Let's use bootstrapping using tidymodels for [beer brew data from #tidytuesday data](https://github.com/rfordatascience/tidytuesday/blob/master/data/2020/2020-03-231/readme.md)
+
+Highlights: Bootstrapping is not just for random forest. I should use broom::tidy()/augment() more within map(). Bootstrapping in {tidymodels} is worth a looksy!
+## Explore Data
+
+```{r}
+# Get the Data
+
+tuesdata <- tidytuesdayR::tt_load('2020-03-31')
+
+
+brewing_materials_raw <- tuesdata$brewing_materials
+
+```
+
+Viz
+
+```{r}
+brewing_fitered <- brewing_materials_raw %>% 
+  filter(type %in% c("Malt and malt products",
+                     "Sugar and syrups",
+                     "Hops (dry)"), year < 2016, month != 12)%>% 
+  mutate(date = paste0(year, "-", month, "-01"),
+         date = lubridate::ymd(date)) 
+
+brewing_materials <- brewing_fitered %>% 
+  select(date, type, month_current) %>% 
+  pivot_wider(names_from = type, values_from = month_current) %>% 
+  janitor::clean_names()
+
+```
+
+What is the relationships?
+
+```{r}
+brewing_materials %>% 
+  ggplot(aes(malt_and_malt_products, sugar_and_syrups)) + 
+  geom_point() + 
+  geom_smooth(method = 'lm')
+```
+
+Use resamplin to get a better estimate.
+
+```{r}
+beer_fit <- lm(sugar_and_syrups~0 + malt_and_malt_products, data = brewing_materials)
+summary(beer_fit)
+library(tidymodels)
+
+tidy(beer_fit)
+```
+
+
+```{r}
+set.seed(1234)
+beer_boot <- bootstraps(brewing_materials,
+           times = 1e3,
+           apparent = TRUE)
+
+beer_models <- beer_boot %>% 
+  mutate(model = map(splits, ~lm(sugar_and_syrups~0 + malt_and_malt_products, data = .)),
+         coef_info = map(model, ~tidy(.)))
+
+beer_coefs <- beer_models %>% 
+  unnest(coef_info)
+```
+## evaluate
+
+```{r}
+beer_coefs %>% 
+  ggplot(aes(estimate)) +
+  geom_density()
+```
+
+```{r}
+int_pctl(beer_models, coef_info)
+
+beer_aug <- beer_models %>% 
+  sample_n(200) %>% 
+  mutate(augmented = map(model, augment)) %>% 
+  unnest(augmented)
+
+beer_aug %>% 
+ ggplot(aes(malt_and_malt_products, sugar_and_syrups)) + 
+  geom_point() +
+  geom_line(aes(y = .fitted, group = id), alpha = 0.1)
+```
+
