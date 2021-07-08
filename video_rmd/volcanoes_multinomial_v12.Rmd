@@ -1,0 +1,165 @@
+---
+title: 'Video 12: Volcanoes'
+author: "Josh Erickson"
+date: "7/8/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(tidymodels)
+library(skimr)
+theme_set(theme_bw())
+```
+
+Let's build a model for [volcanoes from #tidytuesday data](https://github.com/rfordatascience/tidytuesday/blob/master/data/2020/2020-05-12/readme.md)
+
+Highlights=
+
+## Explore Data
+
+```{r}
+# Get the Data
+
+tuesdata <- tidytuesdayR::tt_load('2020-05-12')
+
+
+volcano_raw <- tuesdata$volcano
+
+volcano_raw %>% 
+  count(primary_volcano_type, sort = T)
+skim(volcano_raw)
+```
+
+```{r}
+volcano_df <- volcano_raw %>% 
+  transmute(volcano_type = case_when(str_detect(primary_volcano_type, 
+                                                "Stratovolcano") ~ "Stratovolcano",
+                                                str_detect(primary_volcano_type,
+                                                           "Shield")~"Shield",
+                                     TRUE ~ "Other"),
+            volcano_number, latitude, longitude, elevation, 
+            tectonic_settings, major_rock_1) %>% 
+  mutate(across(where(is.character), factor)) %>% 
+  mutate(tectonic_settings = case_when(str_detect(tectonic_settings, 'Intraplate') ~ 'Intraplate',
+                                       str_detect(tectonic_settings, 'Rift zone') ~ 'Rift zone',
+                                       TRUE ~ 'Subduction Zone'))
+library(sf)
+volcan_sf <- st_as_sf(volcano_df, coords = c('longitude', 'latitude')) 
+
+volcan_sf %>% ggplot() + 
+  geom_sf(aes(color = tectonic_settings)) +
+  borders('world')
+```
+
+```{r}
+volcano_boot <- bootstraps(volcano_df)
+
+```
+
+Need to deal with class imbalance.
+
+```{r}
+library(themis)
+
+volcano_rec <- recipe(volcano_type~., data = volcano_df) %>% 
+  update_role(volcano_number, new_role = 'id') %>% 
+  step_other(major_rock_1) %>% 
+  step_dummy(tectonic_settings, major_rock_1) %>% 
+  step_zv(all_predictors()) %>% 
+  step_normalize(all_predictors()) %>% 
+  step_smote(volcano_type)
+
+
+volcano_prep <- prep(volcano_rec)
+
+juice(volcano_prep) %>% count(volcano_type)
+```
+
+```{r}
+rf_spec <- rand_forest(trees = 1000) %>% 
+  set_mode('classification') %>% 
+  set_engine('ranger')
+
+volcano_wf <- workflow() %>% 
+  add_recipe(volcano_rec) %>% 
+  add_model(rf_spec)
+```
+
+```{r}
+volcano_fold <- vfold_cv(volcano_df)
+volcano_res <- fit_resamples(
+  volcano_wf,
+  resamples = volcano_fold,
+  control = control_resamples(save_pred = TRUE,
+                              verbose = TRUE)
+)
+
+
+volcano_res %>% collect_metrics()
+
+volcano_res %>% collect_predictions() %>% 
+  conf_mat(volcano_type, .pred_class)
+
+volcano_res %>% 
+  collect_predictions() %>% 
+  ppv(volcano_type, .pred_class)
+```
+
+Variable Importance
+
+```{r}
+library(vip)
+
+rf_spec %>% 
+  set_engine('ranger', importance = 'permutation') %>% 
+  fit(
+    volcano_type ~ ., 
+    data = juice(volcano_prep) %>% 
+      select(-volcano_number) %>% 
+      janitor::clean_names()
+  ) %>% 
+  vip(geom = 'point')
+
+volcano_res %>% 
+  collect_predictions() %>% 
+  mutate(correct = volcano_type == .pred_class) %>% 
+  count(correct)
+
+
+volcano_pred <- volcano_res %>% 
+  collect_predictions() %>% 
+  mutate(correct = volcano_type == .pred_class) %>%  left_join(volcano_df %>% 
+                                                           mutate(.row = row_number()))
+
+
+volcan_sf <- st_as_sf(volcano_pred, coords = c('longitude', 'latitude')) 
+
+volcan_sf %>% ggplot() + 
+  stat_summary_hex(data = volcano_pred, aes(longitude, latitude,z = as.integer(correct)), fun = 'mean', alpha = 0.6) + scale_fill_distiller(palette = 'RdBu', direction = 1) +
+  borders('world')
+```
+
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
