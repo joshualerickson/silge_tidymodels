@@ -1,0 +1,135 @@
+---
+title: 'Video 10: Modeling GDPR'
+author: "Josh Erickson"
+date: "7/6/2021"
+output: html_document
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(tidymodels)
+library(skimr)
+theme_set(theme_bw())
+```
+
+Let's build a model for [GDPR violations from #tidytuesday data](https://github.com/rfordatascience/tidytuesday/blob/master/data/2020/2020-04-21/readme.md)
+
+Highlights=
+
+## Explore Data
+
+```{r}
+# Get the Data
+
+tuesdata <- tidytuesdayR::tt_load('2020-04-21')
+
+
+gdpr_raw <- tuesdata$gdpr_violations
+skim(gdpr_raw)
+gdpr_raw %>% mutate(date = lubridate::mdy(date)) %>% count(lubridate::year(date))
+
+gdpr_raw %>% 
+  ggplot(aes(price + 1)) +
+  geom_histogram() + 
+  scale_x_log10(labels = scales::dollar_format(prefix = '€')) + 
+  labs(x = "GDPR Fine (EUR)")
+```
+
+Let's try to understand these articles violated. Does violated different articles associated with the type of fine?
+
+```{r}
+gdpr_tidy <- gdpr_raw %>% 
+  transmute(id, price, 
+            country = name,
+            article_violated,
+            articles = str_extract_all(article_violated, "Art. [:digit:]+|Art.[:digit:]+")) %>% 
+  mutate(total_articles = map_int(articles, length)) %>% 
+  unnest(articles) %>% add_count(articles) %>% filter(n>10) %>% select(-n)
+```
+
+```{r}
+install.packages("ggbeeswarm")
+library(ggbeeswarm)
+
+gdpr_tidy %>% 
+  mutate(articles = str_replace_all(articles, "Art. ", "Article "),
+         articles = fct_reorder(articles, price)) %>% 
+  ggplot(aes(articles, price, color = articles, fill=articles)) +
+  geom_boxplot(alpha = 0.2, outlier.colour = NA) +
+  geom_quasirandom() + 
+  scale_y_log10(labels = scales::dollar_format(prefix = '€')) +
+  labs(x = NULL, y = 'GDPR Fine (EUR)')
+```
+
+```{r}
+gdpr_violations <- gdpr_tidy %>% 
+  mutate(value = 1) %>% 
+  select(-article_violated) %>% 
+  pivot_wider(names_from = articles, values_from = value,
+              values_fn = list(value = max), values_fill = list(value = 0)) %>% 
+  janitor::clean_names() 
+```
+
+## Build a model
+
+```{r}
+
+gdpr_rec <- recipe(price~., data = gdpr_violations) %>% 
+  update_role(id, new_role = 'id') %>% 
+  step_log(price, base = 10, offset = 1, skip = TRUE) %>% 
+  step_other(country, other = 'Other') %>% 
+  step_dummy(all_nominal()) %>% 
+  step_zv(all_predictors())
+
+gdpr_prep <- prep(gdpr_rec)
+
+juice(gdpr_prep)
+```
+
+```{r}
+gdpr_wf <- workflow() %>% 
+  add_recipe(gdpr_rec) %>% 
+  add_model(linear_reg() %>% set_engine('lm'))
+```
+
+```{r}
+gdpr_fit <- gdpr_wf %>% 
+  fit(data = gdpr_violations)
+
+gdpr_fit %>% recipes::tidy()
+gdpr_fit %>% pull_workflow_fit() %>% recipes::tidy()
+```
+
+```{r}
+new_gdpr <- crossing(country = "Other",
+         art_5 = 0:1,
+         art_6 = 0:1,
+         art_13 = 0:1,
+         art_15 = 0:1,
+         art_32 = 0:1) %>% 
+  mutate(total_articles = art_5 + art_6 + art_13 + art_15 + art_32,
+         id = row_number())
+
+mean_pred <- predict(gdpr_fit, new_data = new_gdpr)
+
+conf_int_pred <- predict(gdpr_fit,
+                         new_data = new_gdpr,
+                         type = 'conf_int')
+gdpr_res <- new_gdpr %>% 
+  bind_cols(mean_pred) %>% 
+  bind_cols(conf_int_pred)
+
+gdpr_res %>% 
+  filter(total_articles == 1) %>% 
+  pivot_longer(art_5:art_32) %>% 
+  filter(value > 0) %>% 
+  ggplot(aes(name, 10^.pred)) +
+  geom_point(size = 3) +
+  geom_errorbar(aes(ymin = 10^.pred_lower, ymax = 10^.pred_upper),
+                width = 0.2, alpha = 0.45)+ 
+  scale_y_log10(labels = scales::dollar_format(prefix = '€', accuracy = 1))
+```
+

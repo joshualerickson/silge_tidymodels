@@ -1,0 +1,214 @@
+---
+title: 'Video 8: Tune RF'
+author: "Josh Erickson"
+date: "7/4/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+
+theme_set(theme_bw())
+```
+
+Let's tune a RF model using tidymodels for [Trees in San Francisco  from #tidytuesday data](https://github.com/rfordatascience/tidytuesday/blob/master/data/2020/2020-01-28/readme.md)
+
+
+## Explore Data
+
+```{r}
+# Get the Data
+
+tuesdata <- tidytuesdayR::tt_load('2020-01-28')
+
+
+sf_trees <- tuesdata$sf_trees
+
+sf_trees %>% count(legal_status, sort = T)
+sf_trees %>% count(legal_status, caretaker, wt = dbh, sort = T)
+
+#try to predict legal status.
+trees_df <- sf_trees %>% 
+  mutate(legal_status = case_when(legal_status == "DPW Maintained" ~ legal_status,
+                                  TRUE ~ "Other"),
+         plot_size = parse_number(plot_size)) %>% select(-address) %>% na.omit() %>% 
+  mutate(across(where(is.character), as.factor))
+
+#for spatial autocorr
+Mycluster80 <- kmeans(trees_df[,c('longitude','latitude')], (nrow(trees_df)/80)) 
+trees_df$spatial_cluster80 = Mycluster80$cluster
+
+```
+
+```{r}
+library(skimr)
+skim(trees_df)
+```
+
+```{r}
+library(sf)
+trees_sf <- st_as_sf(trees_df, coords = c('longitude', 'latitude'))
+trees_sf %>% 
+  ggplot() + geom_sf(aes(color = legal_status), size = 0.25, alpha = 0.5)
+```
+
+Let's look at the caretakers
+```{r}
+trees_df %>% 
+  count(legal_status, caretaker, sort = T) %>% 
+  add_count(caretaker, wt = n, name = 'caretaker_count') %>% 
+  filter(caretaker_count > 50) %>% 
+  group_by(legal_status) %>% 
+  mutate(percent_legal = n/sum(n)) %>% 
+  ggplot(aes(percent_legal, caretaker, fill = legal_status)) +
+  geom_col(position = 'dodge')
+```
+
+## build model
+
+```{r}
+library(tidymodels)
+set.seed(1234)
+trees_split <- initial_split(trees_df, strata = legal_status)
+
+trees_train <- training(trees_split)
+trees_test <- testing(trees_split)
+```
+
+Data pre-processing
+
+```{r}
+tree_rec <- recipe(legal_status ~., data = trees_train) %>% 
+  update_role(tree_id, new_role = 'ID') %>% 
+  step_other(c('species','caretaker'),threshold = 0.01) %>% 
+  step_other(site_info, threshold = 0.005) %>% 
+  step_dummy(all_nominal(), -all_outcomes()) %>% 
+  step_date(date, features = c('year')) %>% 
+  step_rm(date, longitude, latitude) %>% 
+  themis::step_downsample(legal_status)
+
+tree_prep <- prep(tree_rec)
+tree_juiced <- juice(tree_prep)
+
+tree_juiced %>% count(date_year, sort = TRUE)
+
+```
+
+Now make the model specs
+
+```{r}
+tune_spec <- rand_forest(
+  mtry = tune(),
+  trees = 1000,
+  min_n = tune()
+  ) %>% 
+  set_mode('classification') %>% 
+  set_engine('ranger')
+
+
+```
+
+For convienence set up a workflow.
+
+```{r}
+tune_workflow <- workflow() %>% 
+  add_recipe(tree_rec) %>% 
+  add_model(tune_spec)
+```
+
+## Train hyperparams
+
+Let's do 10-fold cv; however, let's do spatial cv
+```{r}
+
+Mycluster80 <- kmeans(trees_train[,c('longitude','latitude')], (nrow(trees_train)/80)) 
+trees_train$spatial_cluster80 = Mycluster80$cluster
+
+trees_train_sf <- trees_train %>% st_as_sf(coords = c('longitude', 'latitude'))
+trees_train_sf %>% 
+  ggplot() + geom_sf(aes(color = spatial_cluster80), show.legend = F) +
+  scale_color_distiller(palette = 'Paired')
+
+#now we can set strata to spatial_cluster80
+set.seed(234)
+trees_fold <- vfold_cv(trees_train, strata = spatial_cluster80)
+
+```
+
+```{r}
+doParallel::registerDoParallel()
+
+set.seed(355)
+tune_res <- tune_grid(
+  tune_workflow,
+  resamples = trees_fold,
+  grid = 20
+)
+```
+
+```{r}
+best_auc <- tune_res %>% select_best('roc_auc')
+tune_res %>% 
+  collect_metrics() %>% 
+  filter(.metric == 'roc_auc') %>% 
+  select(mean, min_n, mtry) %>% 
+  pivot_longer(min_n:mtry, 
+              values_to = 'value',
+              names_to = 'parameter') %>% 
+  ggplot(aes(value, mean, color = parameter)) +
+  geom_point(show.legend = F) +
+  facet_wrap(~parameter, scales = 'free')
+```
+
+Tune again but just make a new grid.
+
+```{r}
+rf_grid <- grid_regular(
+  mtry(range = c(10, 40)),
+       min_n(range = c(2,10)),
+       levels = 5
+)
+
+regular_res <- tune_grid(
+  tune_workflow,
+  resamples = trees_fold,
+  grid = rf_grid
+)
+```
+
+GOing to use mtry = 15 and min_n = 2
+
+```{r}
+
+final_rf <- finalize_model(
+  tune_spec,
+  best_auc
+)
+```
+
+Let's look at variable importance.
+
+```{r}
+final_rf %>% 
+  set_engine('ranger', importance = 'permutation') %>% 
+  fit(legal_status~., data = juice(tree_prep) %>% select(-tree_id, -spatial_cluster80)) %>% 
+  vip::vip(geom = 'point')
+```
+
+```{r}
+final_wf <- workflow() %>% 
+  add_recipe(tree_rec) %>%
+  add_model(final_rf)
+
+final_res <- final_wf %>% 
+  last_fit(trees_split)
+
+final_res %>% 
+  collect_metrics()
+
+```
+

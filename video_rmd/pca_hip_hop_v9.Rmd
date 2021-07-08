@@ -1,0 +1,160 @@
+---
+title: 'Video 8: PCA and Hip-Hop'
+author: "Josh Erickson"
+date: "7/5/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(tidymodels)
+library(skimr)
+theme_set(theme_bw())
+```
+
+Let's build a model for [Hip Hop songs of all time from #tidytuesday data](https://github.com/rfordatascience/tidytuesday/blob/master/data/2020/2020-04-14/readme.md)
+
+Highlights: 
+
+## Explore Data
+
+```{r}
+# Get the Data
+
+tuesdata <- tidytuesdayR::tt_load('2020-04-14')
+
+
+rankings <- tuesdata$rankings
+skim(rankings)
+#recreate plot in source material
+
+r1 <- rankings %>% 
+  ggplot(aes(year, points, color = gender, label = artist, label2 = title)) + 
+  geom_jitter() +
+  scale_y_log10()
+
+plotly::ggplotly(r1,tooltip = c("label", 'label2'))
+
+rankings %>% count(artist,  sort = TRUE)
+```
+
+```{r}
+library(spotifyr)
+
+access_token <- get_spotify_access_token()
+
+playlist_features <-get_playlist_audio_features('svigux10jksjocs3bhml6mmt9','42zyRU3gCK2Zw5mkhOC3fa')
+```
+Not going to use
+
+```{r}
+rankings %>% 
+  mutate(search_query = paste(title, artist),
+         search_query = str_to_lower(search_query))
+test <- search_spotify('juicy the notorious b.i.g.', 'track')
+
+test %>% arrange(popularity) %>% filter(row_number() == 1) %>% pull(id)
+```
+start putting together a function 
+```{r}
+pull_id <- function(query){
+  search_spotify(query, 'track') %>%
+    arrange(popularity) %>% 
+    filter(row_number() == 1) %>%
+    pull(id)
+  
+}
+
+ranking_ids <- rankings %>% 
+  mutate(search_query = paste(title, artist),
+         search_query = str_to_lower(search_query),
+         search_query = str_remove(search_query, 'ft.*$')) %>% 
+  mutate(id = map_chr(search_query, possibly(pull_id, NA_character_)))
+```
+
+`r scales::percent(mean(is.na(ranking_ids$id)))`
+
+```{r}
+ranking_features <- ranking_ids %>% 
+  mutate(id_group = row_number() %/% 80) %>% 
+  select(id_group, id) %>% 
+  nest(data = c(id)) %>% 
+  mutate(audio_features = map(data, ~get_track_audio_features(.$id)))
+```
+
+```{r}
+library(corrr)
+ranking_df %>% 
+  select(year:tempo) %>% 
+  correlate() %>% 
+  rearrange() %>% 
+  shave() %>% 
+  rplot()
+
+ranking_lm <- ranking_df %>% 
+  select(-title, -artist) %>% 
+  lm(log(points)~., data = .)
+
+summary(ranking_lm)
+```
+
+## PCA
+
+```{r}
+
+ranking_rec <- recipe(points~., data = ranking_df) %>% 
+  update_role(title, artist,new_role = 'id') %>% 
+  step_log(points) %>% 
+  step_normalize(all_predictors()) %>% 
+  step_pca(all_predictors())
+
+ranking_prep <- prep(ranking_rec)
+
+
+```
+
+Explore Results
+
+```{r}
+
+tidied_pca <- recipes::tidy(ranking_prep, 3)
+
+tidied_pca %>% filter(component %in% c('PC1', 'PC2')) %>% 
+  mutate(component = fct_inorder(component)) %>% 
+  ggplot(aes(value, terms, fill = terms)) + 
+  geom_col(show.legend = F) +
+  facet_wrap(~component)
+
+tidied_pca %>% filter(component %in% c('PC1', 'PC2', 'PC3', 'PC4')) %>%
+  group_by(component) %>% 
+  top_n(5, abs(value)) %>% 
+  ungroup() %>% 
+  ggplot(aes(abs(value), terms, fill = value > 0)) + 
+  geom_col() +
+  facet_wrap(~component, scales = 'free_y')
+```
+
+
+```{r}
+
+juice(ranking_prep) %>% 
+  ggplot(aes(PC1, PC2, label = title, color = points)) +
+  geom_point() + scale_color_distiller(palette = 'RdBu') +
+  geom_text(check_overlap = T)
+
+sdev <- ranking_prep$steps[[3]]$res$sdev
+
+percent_variation <- sdev^2/sum(sdev^2)
+tibble(component = unique(tidied_pca$component),
+       percent_var = percent_variation) %>% 
+  mutate(component = fct_inorder(component)) %>% 
+  ggplot(aes(component, percent_var)) +
+  geom_col()
+```
+
+
+
