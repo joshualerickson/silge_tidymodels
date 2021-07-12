@@ -1,0 +1,175 @@
+---
+title: 'Video 14: PCA with cocktail recipes'
+author: "Josh Erickson"
+date: "7/11/2021"
+output: html_document
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(tidymodels)
+library(skimr)
+theme_set(theme_bw())
+```
+
+Let's build a model for [volcanoes from #tidytuesday data](https://github.com/rfordatascience/tidytuesday/blob/master/data/2020/2020-05-26/readme.md)
+
+Highlights= values_fill = ? is really nice argument in pivot_wider() that i've never noticed.
+
+## Explore Data
+
+```{r}
+# Get the Data
+
+tuesdata <- tidytuesdayR::tt_load('2020-05-26')
+
+
+  boston_cocktails <- tuesdata$boston_cocktails
+
+cocktails_parsed <- boston_cocktails %>% 
+  mutate(ingredient = str_to_lower(ingredient),
+         ingredient = str_replace_all(ingredient, '-', ' '),
+         ingredient = str_remove(ingredient, ' liqueur|(if desired)'),
+         ingredient = case_when(str_detect(ingredient, 'bitters') ~ 'bitters',
+                                str_detect(ingredient, 'orange') ~ 'orange juice',
+                                str_detect(ingredient, 'lemon') ~ 'lemon juice',
+                                str_detect(ingredient, 'lime') ~ 'lime juice',
+                                str_detect(ingredient, 'grapefruit') ~ 'grapefruit juice',
+                                TRUE ~ ingredient), 
+  measure = case_when(str_detect(ingredient, 'bitters') ~ str_replace(measure, 'oz$', 'dash'),
+                      TRUE ~ measure),
+  measure = str_replace(measure, ' ?1/2', '.5'),
+  measure = str_replace(measure, ' ?3/4', '.75'),
+  measure = str_replace(measure, ' ?1/4', '.25'),
+  measure_number = parse_number(measure),
+  measure_number = if_else(str_detect(measure, 'dash$'),
+                           measure_number/50,
+                           measure_number)) %>% 
+  add_count(ingredient) %>% 
+  filter(n > 15) %>% 
+  select(-n) %>% distinct(row_id, ingredient, .keep_all = TRUE)
+
+
+```
+
+Now get it into a wide format.
+
+```{r}
+
+cocktails_df <- cocktails_parsed %>% 
+  select(-ingredient_number, -row_id, -measure) %>% 
+  pivot_wider(names_from = ingredient, values_from = measure_number,
+              values_fill = 0) %>% 
+  janitor::clean_names() %>% 
+  na.omit()
+```
+
+
+## PCA
+
+```{r}
+
+pca_rec <- recipe(~., data = cocktails_df) %>% 
+  update_role(name, category, new_role = 'id') %>% 
+  step_normalize(all_predictors()) %>% 
+  step_pca(all_predictors()) 
+  
+pca_prep <- prep(pca_rec)
+
+pca_prep
+
+juice(pca_prep)
+```
+
+let's tidy it
+```{r}
+tidied_pca <- tidy(pca_prep,2)
+
+
+tidied_pca %>% 
+  filter(component %in% paste0("PC", 1:5)) %>% 
+  mutate(component = fct_inorder(component)) %>% 
+  ggplot(aes(value, terms, fill = terms)) +
+  geom_col(show.legend = F) +
+  facet_wrap(~component, nrow = 1) +
+  labs(y = NULL)
+
+library(tidytext)
+tidied_pca %>% 
+    filter(component %in% paste0("PC", 1:5)) %>% 
+  group_by(component) %>% 
+  top_n(8, abs(value)) %>% 
+  ungroup() %>% 
+  mutate(terms = reorder_within(terms, abs(value), component)) %>% 
+  ggplot(aes(abs(value), terms, fill = value > 0)) + 
+  geom_col() + 
+  facet_wrap(~component, scales= 'free_y') +
+  labs(y = NULL, fill = 'Positive?')
+library(ggforce)
+library(wesanderson)
+
+trace(grDevices::png, quote({
+  if (missing(type) && missing(antialias)) {
+    type <- "cairo-png"
+    antialias <- "subpixel"
+  }
+}), print = FALSE)
+
+
+pca <- juice(pca_prep) %>% 
+  ggplot(aes(PC1, PC2)) +
+  geom_point(alpha = 0.75, size = 2.25, aes(color = category), fill = 'black') +
+  scale_color_manual(values = c(wes_palette('BottleRocket1'), wes_palette('FantasticFox1'))) +
+  labs(title = "OG PCA")
+library(embed)
+umap_rec <- recipe(~., data = cocktails_df) %>% 
+  update_role(name, category, new_role = 'id') %>% 
+  step_normalize(all_predictors()) %>% 
+  step_umap(all_predictors()) 
+  
+umap_prep <- prep(umap_rec)
+ umap <-  juice(umap_prep) %>% 
+  ggplot(aes(umap_1, umap_2)) +
+  geom_point(alpha = 0.75, size = 2.25, aes(color = category), fill = 'black') +
+  scale_color_manual(values = c(wes_palette('BottleRocket1'), wes_palette('FantasticFox1'))) +
+   labs(title = 'umap?', subtitle = 'need to explore...')
+
+library(patchwork)
+
+ 
+ umap + pca + plot_layout(guides = 'collect') & labs(color = 'Category')
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

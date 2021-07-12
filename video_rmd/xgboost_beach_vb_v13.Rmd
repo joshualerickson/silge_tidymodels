@@ -1,0 +1,175 @@
+---
+title: 'Video 13: tuning with xgboost'
+author: "Josh Erickson"
+date: "7/10/2021"
+output: html_document
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(tidymodels)
+library(skimr)
+theme_set(theme_bw())
+```
+
+Let's build a model for [beach volleyball matches from #tidytuesday data](https://github.com/rfordatascience/tidytuesday/blob/master/data/2020/2020-05-19/readme.md)
+
+Highlights=
+
+## Explore Data
+
+```{r}
+# Get the Data
+
+tuesdata <- tidytuesdayR::tt_load('2020-05-19')
+
+
+vb_matches <- tuesdata$vb_matches
+
+vb_matches %>% view()
+```
+
+Munging
+
+```{r}
+vb_parsed <- vb_matches %>% 
+  transmute(
+    circuit,
+    gender,
+    year,
+    w_attacks = w_p1_tot_attacks + w_p2_tot_attacks,
+    w_kills = w_p1_tot_kills + w_p2_tot_kills,
+    #w_errors = w_p1_tot_errors + w_p2_tot_errors,
+    w_aces = w_p1_tot_aces + w_p2_tot_aces,
+    #w_serve_errors = w_p1_tot_serve_errors + w_p2_tot_serve_errors,
+    w_blocks = w_p1_tot_blocks + w_p2_tot_blocks,
+    w_digs = w_p1_tot_digs + w_p2_tot_digs,
+    l_attacks = l_p1_tot_attacks + l_p2_tot_attacks,
+    l_kills = l_p1_tot_kills + l_p2_tot_kills,
+    #l_errors = l_p1_tot_errors + l_p2_tot_errors,
+    l_aces = l_p1_tot_aces + l_p2_tot_aces,
+    #l_serve_errors = l_p1_tot_serve_errors + l_p2_tot_serve_errors,
+    l_blocks = l_p1_tot_blocks + l_p2_tot_blocks,
+    l_digs = l_p1_tot_digs + l_p2_tot_digs
+    
+  ) %>% na.omit()
+
+#had to take out serve errors
+vb_parsed %>% mutate(across(w_attacks:l_digs, is.na)) %>% summarise(across(w_attacks:l_digs, sum))
+%>% na.omit()
+
+
+winners <- vb_parsed %>% 
+  select(circuit, gender, year,
+         w_attacks:w_digs) %>% 
+  rename_with(~str_remove_all(., 'w_'), w_attacks:w_digs) %>% 
+  mutate(win = 'win')
+
+losers <- vb_parsed %>% 
+  select(circuit, gender, year,
+         l_attacks:l_digs) %>% 
+  rename_with(~str_remove_all(., 'l_'), l_attacks:l_digs) %>% 
+  mutate(win = 'lose')
+
+
+vb_df <- bind_rows(winners, losers) %>% 
+  mutate(across(where(is.character), factor))
+
+```
+
+
+```{r}
+vb_df %>% 
+  pivot_longer(attacks:digs, names_to = 'stat', values_to = 'value') %>% 
+  ggplot(aes(gender, value, fill = win, color = win)) + 
+  geom_boxplot(alpha = 0.4) +
+  facet_wrap(~stat,scales = 'free_y')
+```
+
+## build model
+
+```{r}
+set.seed(947924)
+
+vb_split <- initial_split(vb_df, strata = win)
+vb_train <- training(vb_split)
+vb_test <- testing(vb_split)
+```
+
+```{r}
+xgb_spec <- boost_tree(
+  trees = 1000,
+  tree_depth = tune(), min_n = tune(), loss_reduction = tune(),
+  mtry = tune(), learn_rate = tune(), sample_size = tune()
+) %>% 
+  set_engine('xgboost') %>% 
+  set_mode('classification')
+
+
+```
+
+```{r}
+xgb_grid <- grid_latin_hypercube(
+  tree_depth(),
+  min_n(),
+  loss_reduction(),
+  sample_size = sample_prop(),
+  learn_rate(),
+  finalize(mtry(), vb_train),
+  size = 20
+)
+
+xgb_wf <- workflow() %>% 
+  add_formula(win~.) %>% 
+  add_model(xgb_spec)
+
+set.seed(234)
+vb_folds <- vfold_cv(data = vb_train, strata = win)
+
+doParallel::registerDoParallel()
+
+set.seed(2345)
+install.packages('xgboost')
+xgb_res <- tune_grid(
+  xgb_wf,
+  resamples = vb_folds,
+  grid = xgb_grid, 
+  control = control_grid(save_pred = TRUE)
+)
+```
+
+
+## Explore Results 
+
+```{r}
+xgb_res %>% 
+  collect_metrics()
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
