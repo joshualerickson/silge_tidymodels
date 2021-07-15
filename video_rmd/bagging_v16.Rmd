@@ -1,0 +1,170 @@
+---
+title: 'Video 16: Astonaut Missions'
+author: "Josh Erickson"
+date: "7/14/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(tidymodels)
+library(skimr)
+theme_set(theme_bw())
+trace(grDevices::png, quote({
+  if (missing(type) && missing(antialias)) {
+    type <- "cairo-png"
+    antialias <- "subpixel"
+  }
+}), print = FALSE)
+library(wesanderson)
+```
+
+Let's bootstrap some data for [missions of astronauts from #tidytuesday data](https://github.com/rfordatascience/tidytuesday/blob/master/data/2020/2020-07-14/readme.md)
+
+Highlights= flooring, don't forget! (year_of_mission %/% 10)*10
+
+## Explore Data
+
+```{r}
+# Get the Data
+
+tuesdata <- tidytuesdayR::tt_load('2020-07-14')
+
+
+astronauts <- tuesdata$astronauts
+skim(astronauts)
+astronauts %>% view()
+
+astronauts %>% 
+  mutate(year_of_mission = (year_of_mission %/% 10)*10,
+         year_of_mission = factor(year_of_mission)) %>% 
+  ggplot(aes(year_of_mission, hours_mission, fill = year_of_mission)) + 
+  geom_boxplot(alpha = 0.5)+
+  scale_fill_manual(values = wes_palette(c(wes_palettes$BottleRocket1, wes_palettes$Royal2))) +
+  scale_y_log10()
+
+astronauts_df <- astronauts %>% 
+  select(name, mission_title, hours_mission,
+         military_civilian, occupation,
+         year_of_mission, in_orbit) %>% 
+  mutate(in_orbit = case_when(str_detect(in_orbit, '^Salyut') ~'Salyut',
+                              str_detect(in_orbit, 'STS') ~ 'STS',
+                              TRUE ~ in_orbit),
+         occupation = str_to_lower(occupation)) %>% 
+  filter(hours_mission > 0) %>% 
+  mutate(hours_mission = log(hours_mission)) %>% 
+  na.omit()
+```
+
+
+
+```{r}
+set.seed(234)
+
+
+astro_split <- initial_split(astronauts_df, strata = hours_mission)
+astro_train <- training(astro_split)
+astro_test <- testing(astro_split)
+
+```
+
+Pre-processing
+
+```{r}
+astro_recipe <- recipe(hours_mission~., data = astro_train) %>% 
+  update_role(name, mission_title, new_role = 'id') %>% 
+  step_other(occupation, in_orbit,threshold =  0.005) %>% 
+  step_dummy(all_nominal(), -has_role('id'))
+
+prep(astro_recipe) %>% juice()
+```
+
+Bagging model
+```{r}
+library(baguette)
+
+astro_wf <- workflow() %>% 
+  add_recipe(astro_recipe) 
+
+tree_spec <- bag_tree() %>% 
+  set_engine('rpart', times = 25) %>% 
+  set_mode('regression')
+
+
+mars_spec <- bag_mars() %>% 
+  set_engine('earth', times = 25) %>% 
+  set_mode('regression')
+
+tree_res <- astro_wf %>% 
+  add_model(tree_spec) %>% 
+  fit(astro_train)
+
+mars_res <- astro_wf %>% 
+  add_model(mars_spec) %>% 
+  fit(astro_train)
+
+
+```
+
+```{r}
+test_rs <- astro_test %>% 
+  bind_cols(predict(tree_res, astro_test)) %>% 
+  rename(.pred_tree = .pred) %>% 
+  bind_cols(predict(mars_res, astro_test)) %>% 
+  rename(.pred_mars = .pred)
+
+
+```
+
+
+
+```{r}
+new_astronauts <- crossing(in_orbit = c("ISS","STS", "Mir", "other"),
+                           military_civilian = "civilian",
+                           occupation = 'other',
+                           year_of_mission = seq(1960,2010, 10),
+                           name = 'id', mission_title = 'id') %>% 
+  filter(!(in_orbit == 'ISS' & year_of_mission < 2000),
+         !(in_orbit == 'Mir' & year_of_mission < 1990),
+         !(in_orbit == 'STS' & year_of_mission < 1980),
+         !(in_orbit == 'STS' & year_of_mission > 2010))
+
+new_astronauts %>% 
+  bind_cols(predict(tree_res, new_astronauts)) %>% 
+  ggplot(aes(year_of_mission, .pred, color = in_orbit)) +
+  geom_point() +
+  geom_line()
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

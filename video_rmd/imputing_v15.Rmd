@@ -1,0 +1,127 @@
+---
+title: 'Video 14: Juneteeth'
+author: "Josh Erickson"
+date: "7/12/2021"
+output: html_document
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(tidymodels)
+library(skimr)
+theme_set(theme_bw())
+```
+
+Let's impute some data for [transport of captive Africans from #tidytuesday data](https://github.com/rfordatascience/tidytuesday/blob/master/data/2020/2020-06-16/readme.md)
+
+Highlights= {naniar} with gg_miss_upset() is a really nice eda tool! 
+
+## Explore Data
+
+```{r}
+# Get the Data
+
+tuesdata <- tidytuesdayR::tt_load('2020-06-16')
+
+
+african_names <- tuesdata$african_names
+
+african_names %>% view()
+
+skim(african_names)
+
+african_names %>% count(port_disembark, sort=TRUE)
+african_names %>% count(port_embark, sort = T)
+
+african_names %>% 
+  ggplot(aes(year_arrival,y = ..count..))+ 
+  geom_histogram() +
+  geom_density() 
+
+african_names %>% 
+  filter(year_arrival < 1850) %>% 
+  group_by(year_arrival) %>% 
+summarise(age = mean(age, na.rm = TRUE)) %>% 
+  ggplot(aes(year_arrival, age)) + 
+  geom_line(alpha = 0.6, size = 1.5) +
+  geom_smooth()
+
+african_names %>% 
+  ggplot(aes(year_arrival, fill = gender)) + 
+  geom_histogram(aes(group = gender), position = 'dodge')
+library(ggrepel)
+african_names %>% 
+  group_by(name) %>% 
+  summarise(n = n(),
+            age = mean(age, na.rm = TRUE),
+            year_arrival = mean(year_arrival, na.rm = T)) %>% 
+  ungroup() %>% 
+  filter(n > 50) %>% 
+  ggplot(aes(year_arrival, age)) + 
+  geom_point(aes(size= n), alpha = 0.7) +
+  geom_text_repel(aes(label = name))
+
+```
+
+## Impute missing data
+
+```{r}
+liberated_df <- african_names %>% 
+  filter(year_arrival < 1850) %>% 
+  mutate(gender = case_when(gender == "Boy" ~ "Man",
+                            gender == 'Girl' ~ "Woman",
+                            TRUE ~ gender)) %>% 
+  mutate(across(where(is.character), factor))
+```
+
+```{r}
+library(naniar) 
+
+gg <- african_names %>% 
+  select(gender, height, age) %>% 
+  naniar::gg_miss_upset()
+
+```
+
+
+
+```{r}
+library(recipes)
+
+impute_rec <- recipe(year_arrival ~ gender + age + height, data = liberated_df) %>% step_meanimpute(height) %>% 
+  step_knnimpute(all_predictors())
+
+imputed <- prep(impute_rec) %>% juice()
+summary(liberated_df$gender)
+summary(imputed$gender)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
