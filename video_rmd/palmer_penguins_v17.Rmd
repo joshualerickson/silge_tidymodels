@@ -1,0 +1,199 @@
+---
+title: 'Video 17: Palmer Penguins'
+author: "Josh Erickson"
+date: "7/16/2021"
+output: html_document
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(tidymodels)
+library(skimr)
+theme_set(theme_bw())
+trace(grDevices::png, quote({
+  if (missing(type) && missing(antialias)) {
+    type <- "cairo-png"
+    antialias <- "subpixel"
+  }
+}), print = FALSE)
+library(wesanderson)
+```
+
+Let's build a model from some data for [palmer penguins #tidytuesday data](https://github.com/rfordatascience/tidytuesday/blob/master/data/2020/2020-07-28/readme.md)
+
+Highlights= flooring, don't forget! (year_of_mission %/% 10)*10
+
+## Explore Data
+
+```{r}
+# Get the Data
+
+tuesdata <- tidytuesdayR::tt_load('2020-07-28')
+
+
+penguins <- tuesdata$penguins %>% mutate(sex = factor(sex))
+penguins %>% view()
+penguins %>% count(species, island)
+penguins %>% distinct(year)
+```
+
+## Explore 
+
+```{r}
+penguins %>% 
+  ggplot(aes(flipper_length_mm, bill_length_mm, color = sex, size = body_mass_g)) + 
+  geom_jitter(alpha = 0.5) +
+  facet_wrap(~species)
+  
+penguins_df <- penguins %>% 
+  filter(!is.na(sex)) %>% 
+  select(-year, -island)
+```
+
+## Build a model
+
+```{r}
+set.seed(1234)
+
+penguin_split <- initial_split(penguins_df, strata = sex)
+
+penguin_train <- training(penguin_split)
+penguin_test <- testing(penguin_split)
+
+set.seed(4838)
+
+penguin_boot <- bootstraps(penguin_train)
+
+
+```
+
+
+```{r}
+glm_spec <- logistic_reg() %>% 
+  set_engine('glm')
+
+rf_spec <- rand_forest() %>% 
+  set_mode('classification') %>% 
+  set_engine('ranger') 
+```
+
+Using a workflow is really handy.
+
+```{r}
+penguin_wf <- workflow() %>% 
+  add_formula(sex ~ .)
+
+penguin_wf
+```
+
+
+```{r}
+glm_results <- penguin_wf %>% add_model(glm_spec) %>% 
+  fit_resamples(
+    resamples = penguin_boot,
+    control = control_resamples(save_pred = TRUE, verbose = TRUE)
+  )
+
+
+rf_results <- penguin_wf %>% add_model(rf_spec) %>% 
+  fit_resamples(
+    resamples = penguin_boot,
+    control = control_resamples(save_pred = T, verbose = T)
+  )
+
+```
+
+
+## Evaluating Model
+
+```{r}
+collect_metrics(rf_results)
+
+collect_metrics(glm_results)
+
+
+glm_results %>% 
+  conf_mat_resampled()
+
+glm_results %>% 
+  collect_predictions() %>% 
+  group_by(id) %>% 
+  roc_curve(sex, .pred_female) %>% 
+  ggplot(aes(1-specificity, sensitivity, color = id)) +
+  geom_abline(lty = 1, color = 'black', size = 1) +
+  geom_path(show.legend = F, alpha = 0.73, size = 1, se = F)
+```
+
+
+```{r}
+penguin_final <- penguin_wf %>% 
+  add_model(glm_spec) %>% 
+  last_fit(penguin_split)
+
+penguin_final %>% 
+  collect_metrics()
+
+penguin_final %>% 
+  collect_predictions() %>% 
+  conf_mat(sex,.pred_class)
+
+penguin_final$.workflow[[1]] %>% 
+  tidy()
+
+exp(0.817)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
