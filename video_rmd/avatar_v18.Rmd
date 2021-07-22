@@ -1,0 +1,207 @@
+---
+title: 'Video 18:'
+author: "Josh Erickson"
+date: "7/18/2021"
+output: html_document
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(tidymodels)
+library(skimr)
+theme_set(theme_bw())
+trace(grDevices::png, quote({
+  if (missing(type) && missing(antialias)) {
+    type <- "cairo-png"
+    antialias <- "subpixel"
+  }
+}), print = FALSE)
+library(wesanderson)
+```
+
+Let's build a model from some data for [avatar tv series #tidytuesday data](https://github.com/rfordatascience/tidytuesday/blob/master/data/2020/2020-08-11/readme.md)
+
+Highlights= collect_predictions() and collect_metrics() make it quick to start evaluating models! Predicting text is fun but I have no idea what I'm doing... The {tidymodels} framework is started to click a little, maybe 15 more videos.
+
+## Explore Data
+
+```{r}
+# Get the Data
+
+tuesdata <- tidytuesdayR::tt_load('2020-08-11')
+
+
+avatar_raw <- tuesdata$avatar
+avatar_raw %>% view()
+avatar_raw %>% count(character, book, sort = T)
+avatar_raw %>% distinct(character)
+```
+
+## Explore 
+
+```{r}
+library(tidytext)
+
+avatar_raw %>% 
+  filter(!is.na(character_words)) %>% 
+  mutate(book = fct_inorder(book),
+         character = fct_lump_n(character, 10)) %>% 
+count(book, character) %>% 
+  ggplot(aes(n, character, fill = book)) +
+  geom_col(show.legend = F) +
+  facet_wrap(~book, scales = 'free')
+
+avatar <- avatar_raw %>% 
+ filter(!is.na(character_words)) %>% 
+  mutate(aang = if_else(character == 'Aang', 'Aang', 'Other')) %>% 
+  select(aang, book, text = character_words)
+
+avatar %>% 
+  filter(aang == 'Aang') %>% 
+  sample_n(40) %>% 
+  pull(text)
+library(tidylo)
+avatar_lo <- avatar %>% 
+  unnest_tokens(word, text) %>% 
+  count(aang, word) %>% 
+  bind_log_odds(aang, word, n) %>% 
+arrange(-log_odds_weighted)
+
+avatar_lo %>% 
+  group_by(aang) %>% 
+  slice_max(log_odds_weighted, n = 15) %>% 
+  ungroup() %>% 
+  mutate(word = reorder(word, log_odds_weighted)) %>% 
+  ggplot(aes(log_odds_weighted, word, fill = aang)) +
+  geom_col(alpha = 0.8, show.legend = F) +
+  facet_wrap(~aang, scales = "free")
+
+```
+
+
+```{r}
+library(textfeatures)
+
+
+tf <- textfeatures(avatar, sentiment = F, word_dims = 0, 
+             normalize = F)
+
+tf %>% 
+  bind_cols(avatar) %>% 
+  group_by(aang) %>% 
+  summarise(across(starts_with('n_'), mean)) %>% 
+  pivot_longer(starts_with('n_'), names_to = 'text_feature') %>% 
+  filter(value >= 0.01) %>% 
+  ggplot(aes(aang, value, fill = aang)) + 
+  geom_col(position = 'dodge', alpha = 0.8, show.legend = F) +
+  facet_wrap(~text_feature, scales = 'free')
+```
+
+## build two models
+
+```{r}
+set.seed(24543)
+avatar_split <- initial_split(avatar, strata = aang)
+
+avatar_train <- training(avatar_split)
+avatar_test <- testing(avatar_split)
+
+set.seed(34345)
+
+avatar_folds <- vfold_cv(avatar_train, strata = aang)
+
+
+```
+
+### Preprocessing
+
+```{r}
+library(themis)
+library(textrecipes)
+
+avatar_rec <- recipe(aang ~ text, data = avatar_train) %>% 
+  step_downsample(aang) %>% 
+  step_textfeature(text) %>% 
+  step_zv(all_predictors()) %>% 
+  step_normalize(all_predictors()) 
+
+
+avatar_prep <- prep(avatar_rec)
+
+juice(avatar_prep)
+```
+
+
+```{r}
+rf_spec <- rand_forest(trees = 1000) %>% 
+  set_engine('ranger') %>% set_mode('classification')
+
+svm_spec <- svm_rbf(cost = 0.5) %>% 
+  set_engine('kernlab') %>% 
+  set_mode('classification')
+
+
+avatar_wf <- workflow() %>% add_recipe(avatar_rec)
+
+
+set.seed(13433)
+rf_rs <- avatar_wf %>% 
+  add_model(rf_spec) %>% 
+  fit_resamples(
+    resamples = avatar_folds,
+    metrics = metric_set(roc_auc, accuracy, sens, spec),
+    control = control_resamples(save_pred = TRUE)
+  )
+
+set.seed(13433)
+
+svm_rs <- avatar_wf %>% 
+  add_model(svm_spec) %>% 
+  fit_resamples(
+    resamples = avatar_folds,
+    metrics = metric_set(roc_auc, accuracy, sens, spec),
+    control = control_resamples(save_pred = TRUE)
+  )
+
+
+```
+
+
+```{r}
+collect_metrics(rf_rs)
+
+conf_mat_resampled(rf_rs)
+collect_predictions(rf_rs) %>% conf_mat(aang, .pred_class)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

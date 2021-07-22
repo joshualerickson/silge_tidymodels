@@ -44,9 +44,38 @@ astronauts %>%
          year_of_mission = factor(year_of_mission)) %>% 
   ggplot(aes(year_of_mission, hours_mission, fill = year_of_mission)) + 
   geom_boxplot(alpha = 0.5)+
-  scale_fill_manual(values = wes_palette(c(wes_palettes$BottleRocket1, wes_palettes$Royal2))) +
+  scale_fill_manual(values = c(wes_palette('GrandBudapest2'), wes_palette('GrandBudapest1'))) +
   scale_y_log10()
 
+astronauts %>% 
+  mutate(year_of_mission = (year_of_mission %/% 10)*10,
+         year_of_mission = factor(year_of_mission)) %>%
+ggplot(aes(x = year_of_mission, y = hours_mission, fill = year_of_mission)) + 
+  ggdist::stat_halfeye(
+    adjust = .5, 
+    width = .6, 
+    .width = 0, 
+    justification = -.3) + 
+  geom_boxplot(
+    width = .25, 
+    outlier.shape = NA
+  ) +
+  geom_point(
+    size = 1.3,
+    alpha = .3,
+    position = position_jitter(
+      seed = 1, width = .1
+    )
+  ) +
+  scale_fill_manual(values = c(wes_palette('GrandBudapest2'), wes_palette('GrandBudapest1'))) +
+  scale_y_log10()+ 
+  coord_cartesian(xlim = c(1.2, NA), clip = "off") +
+  labs(x = 'Decade of Space Missions', y = 'Hours within Mission',
+       fill = 'Decade of Space Missions', title = 'Hours per space mission over time (decades)')
+
+
+
+wes_palettes
 astronauts_df <- astronauts %>% 
   select(name, mission_title, hours_mission,
          military_civilian, occupation,
@@ -78,7 +107,7 @@ Pre-processing
 astro_recipe <- recipe(hours_mission~., data = astro_train) %>% 
   update_role(name, mission_title, new_role = 'id') %>% 
   step_other(occupation, in_orbit,threshold =  0.005) %>% 
-  step_dummy(all_nominal(), -has_role('id'))
+  step_dummy(all_nominal(),-has_role('id'))
 
 prep(astro_recipe) %>% juice()
 ```

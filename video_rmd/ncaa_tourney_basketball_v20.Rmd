@@ -1,0 +1,157 @@
+---
+title: 'video 20: ncaa tourney'
+author: "Josh Erickson"
+date: "7/21/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(tidymodels)
+library(skimr)
+theme_set(theme_bw())
+
+trace(grDevices::png, quote({
+  if (missing(type) && missing(antialias)) {
+    type <- "cairo-png"
+    antialias <- "subpixel"
+  }
+}), print = FALSE)
+
+library(wesanderson)
+```
+
+Let's build a model from some data for [ncaa basketball #tidytuesday data](https://github.com/rfordatascience/tidytuesday/blob/master/data/2020/2020-10-6/readme.md)
+
+Highlights=  geom_bin2d() is really nice for discrete data.
+
+## Explore Data
+
+```{r}
+# Get the Data
+
+tuesdata <- tidytuesdayR::tt_load('2020-10-6')
+
+
+tournament <- tuesdata$tournament
+tournament %>% view()
+tournament %>% count(school, sum(tourney_w), sort = T)
+tournament %>% distinct(Entity)
+```
+
+## Explore 
+
+
+```{r}
+tournament %>% 
+  group_by(seed) %>% 
+  summarise(exp_wins = mean(tourney_w, na.rm = T)) %>% 
+  ggplot() + geom_point(aes(seed, exp_wins))
+
+tournament %>% 
+  ggplot(aes(seed, tourney_w)) + 
+  geom_bin2d(alpha=0.6, binwidth = c(1,1)) +
+  scale_fill_gradientn(colours = rev(wes_palette('Chevalier1')))
+```
+
+
+
+```{r}
+set.seed(134)
+tourney_split <- tournament %>% 
+  filter(!is.na(seed)) %>% 
+  initial_split(strata = seed)
+
+tourney_train <- training(tourney_split)
+tourney_test <- testing(tourney_split)
+
+```
+
+Make some folds 
+
+```{r}
+set.seed(134)
+
+tourney_folds <- bootstraps(tourney_train)
+
+
+```
+
+recipe
+
+```{r}
+tourney_rec <- recipe(tourney_w ~ seed, data = tourney_train) %>% 
+  step_ns(seed, deg_free = tune(id = "seed_splines")) 
+
+```
+
+spec and workflow
+
+```{r}
+lm_spec <- linear_reg() %>% set_engine('lm')
+
+
+tourney_wf <- workflow() %>% 
+  add_recipe(tourney_rec) %>% 
+  add_model(lm_spec)
+  
+  
+```
+
+
+```{r}
+doParallel::registerDoParallel()
+
+
+save_preds <- control_grid(save_pred = TRUE) 
+
+spline_grid <- tibble(seed_splines = c(1:3, 5,7,10,15))
+
+
+spline_rs <- tune_grid(
+  tourney_wf, 
+  resamples = tourney_folds,
+  grid = spline_grid,
+  control = save_preds
+)
+```
+
+
+```{r}
+collect_metrics(spline_rs)
+
+autoplot(spline_rs)
+
+select_best(spline_rs)
+
+select_by_one_std_err(spline_rs, metric = 'rmse', seed_splines)
+```
+
+```{r}
+final_wf <- finalize_workflow(tourney_wf, tibble(seed_splines = 3))
+
+tourney_fit <- fit(final_wf, tourney_train)
+
+tourney_test %>% 
+bind_cols(predict(tourney_fit, tourney_test)) %>% 
+  metrics(tourney_w, .pred)
+  
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
