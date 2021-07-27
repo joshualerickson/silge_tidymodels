@@ -1,0 +1,131 @@
+---
+title: 'video 21: Dinasour data'
+author: "Josh Erickson"
+date: "7/22/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(tidymodels)
+library(skimr)
+theme_set(theme_bw())
+
+trace(grDevices::png, quote({
+  if (missing(type) && missing(antialias)) {
+    type <- "cairo-png"
+    antialias <- "subpixel"
+  }
+}), print = FALSE)
+
+library(wesanderson)
+```
+
+Let's build a model from some data for [datasauurus #tidytuesday data](https://github.com/rfordatascience/tidytuesday/blob/master/data/2020/2020-10-13/readme.md)
+
+Highlights=  the datasaurus dataset is really interesting (same mean, covariance, sd) but completely different orientation (x, y). Was really easy to look at roc curves per class (multiclass)! Again, resampling is super easy in {tidymodels}
+
+## Explore Data
+
+```{r}
+# Get the Data
+
+tuesdata <- tidytuesdayR::tt_load('2020-10-13')
+
+
+datasaurus <- tuesdata$datasaurus
+
+```
+
+## Explore 
+
+```{r}
+datasaurus %>% 
+  ggplot(aes(x, y , color = dataset)) + 
+  geom_point() +
+  facet_wrap(~dataset)
+```
+
+```{r}
+datasaurus %>% 
+  group_by(dataset) %>% 
+  summarise(across(c(x,y), list(mean = mean, sd = sd)),
+            x_y_cor = cor(x,y))
+```
+
+## Build a model
+
+```{r}
+
+dino_folds <- datasaurus %>% 
+  mutate(dataset = factor(dataset)) %>% 
+  bootstraps()
+
+rf_spec <- rand_forest(trees = 1000) %>% 
+  set_mode('classification') %>% 
+  set_engine('ranger')
+
+dino_wf <- workflow() %>% 
+  add_model(rf_spec) %>% 
+  add_formula(dataset~x+y)
+
+```
+
+```{r}
+doParallel::registerDoParallel()
+
+dino_rs <- fit_resamples(dino_wf,
+              resamples = dino_folds,
+              control = control_resamples(save_pred = TRUE))
+```
+
+
+## Evaluate Model
+
+```{r}
+collect_metrics(dino_rs)
+
+dino_rs %>% 
+  collect_predictions() %>% 
+  group_by(id) %>% 
+  ppv(dataset, .pred_class)
+
+```
+
+
+```{r}
+dino_rs %>% 
+  collect_predictions() %>% 
+  group_by(id) %>% 
+  roc_curve(dataset, .pred_away:.pred_x_shape) %>% 
+  autoplot()
+```
+
+
+
+```{r}
+dino_rs %>% 
+  collect_predictions() %>% 
+  conf_mat(dataset, .pred_class)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

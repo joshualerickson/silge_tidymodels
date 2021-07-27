@@ -1,0 +1,138 @@
+---
+title: "Video 22: Predicting IKEA Funiture Prices"
+author: "Josh Erickson"
+date: "7/24/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(tidymodels)
+library(skimr)
+theme_set(theme_bw())
+
+trace(grDevices::png, quote({
+  if (missing(type) && missing(antialias)) {
+    type <- "cairo-png"
+    antialias <- "subpixel"
+  }
+}), print = FALSE)
+
+library(wesanderson)
+```
+
+Let's build a model from some data for [datasauurus #tidytuesday data](https://github.com/rfordatascience/tidytuesday/blob/master/data/2020/2020-11-03/readme.md)
+
+Highlights=  GGally is funky at first but in the end is worth it for EDA! {uesmodels} is a really convenient for model building ,
+textrecipes step_clean_text() is super helpful but for Windows users use control = control_grid(pkgs = c('textrecipes')) to work in parallel. 
+
+## Explore Data
+
+```{r}
+# Get the Data
+
+tuesdata <- tidytuesdayR::tt_load('2020-11-03')
+
+
+ikea <- tuesdata$ikea
+
+ikea %>% view()
+
+```
+
+## Explore 
+
+```{r}
+library(GGally)
+ikea %>% 
+  ggplot(aes(width, price)) +
+  geom_point(alpha = 0.4) +
+  scale_x_log10() +
+  scale_y_log10()
+
+ikea %>%  mutate(price_cut = cut_interval(price,n = 5)) %>% 
+  GGally::ggpairs(columns = c('depth', 'height', 'width', 'price_cut'), aes(color = price_cut))
+```
+
+```{r}
+ikea_df <- ikea %>% 
+  select(price, name, category, depth, height, width) %>% 
+  mutate(price = log10(price)) %>% 
+  mutate(across(where(is.character), factor))
+```
+
+
+
+## Build a model
+
+```{r}
+set.seed(1234)
+
+
+ikea_split <- initial_split(ikea_df, strata = price)
+ikea_train <- training(ikea_split)
+ikea_test <- testing(ikea_split)
+
+set.seed(1343)
+ikea_folds <- bootstraps(ikea_train, strata = price)
+
+```
+
+```{r}
+library(usemodels)
+library(textrecipes)
+use_ranger(price ~ ., data = ikea_train)
+
+ranger_recipe <- 
+  recipe(formula = price ~ ., data = ikea_train) %>% 
+  step_other(name, category, threshold = 0.01) %>% 
+  step_clean_levels(name, category) %>% 
+  step_knnimpute(depth, height, width)
+
+ranger_spec <- 
+  rand_forest(mtry = tune(), min_n = tune(), trees = 1000) %>% 
+  set_mode("regression") %>% 
+  set_engine("ranger") 
+
+ranger_workflow <- 
+  workflow() %>% 
+  add_recipe(ranger_recipe) %>% 
+  add_model(ranger_spec) 
+
+set.seed(51888)
+doParallel::registerDoParallel()
+ranger_tune <-
+  tune_grid(ranger_workflow, 
+            resamples = ikea_folds, 
+            grid = 11,
+  control = control_grid(pkgs = c('textrecipes')))
+ranger_tune %>% collect_metrics()
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

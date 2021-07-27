@@ -1,0 +1,197 @@
+---
+title: 'Video 25: artwork'
+author: "Josh Erickson"
+date: "7/26/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(tidymodels)
+library(skimr)
+theme_set(theme_bw())
+
+trace(grDevices::png, quote({
+  if (missing(type) && missing(antialias)) {
+    type <- "cairo-png"
+    antialias <- "subpixel"
+  }
+}), print = FALSE)
+
+library(wesanderson)
+```
+
+Let's build a model from some data for [artwork #tidytuesday data](https://github.com/rfordatascience/tidytuesday/blob/master/data/2020/2021-01-12/readme.md)
+
+Highlights=  GGally is funky at first but in the end is worth it for EDA! {uesmodels} is a really convenient for model building ,
+textrecipes step_clean_text() is super helpful but for Windows users use control = control_grid(pkgs = c('textrecipes')) to work in parallel. 
+
+## Explore Data
+
+```{r}
+# Get the Data
+
+tuesdata <- tidytuesdayR::tt_load('2021-01-12')
+
+
+  artwork <- tuesdata$artwork
+
+artwork %>% count(medium)
+artwork %>% view()
+
+```
+
+## Explore 
+
+```{r}
+artwork %>% 
+  ggplot(aes(year)) +
+  geom_histogram()
+```
+
+Munging
+
+```{r}
+tate_df <- artwork %>% 
+  filter(year > 1750) %>% 
+  select(year, medium) %>% 
+  na.omit() %>% 
+  arrange(year)
+```
+
+
+
+```{r}
+library(tidytext) 
+
+tate_df %>% 
+  unnest_tokens(word,medium) %>% 
+  count(word, sort =T)
+```
+
+
+```{r}
+
+art_split <- initial_split(data = tate_df, strata = year)
+
+art_train <- training(art_split)
+art_test <- testing(art_split)
+
+
+set.seed(1234)
+
+art_folds <- vfold_cv(data = art_train, strata = year)
+```
+
+pre-processing
+```{r}
+library(textrecipes)
+
+sparse_bp <- hardhat::default_recipe_blueprint(composition = 'dgCMatrix')
+
+art_rec <- recipe(year ~ medium, data = art_train) %>% 
+  step_tokenize(medium) %>% 
+  step_stopwords(medium) %>% 
+  step_tokenfilter(medium, max_tokens = 500) %>% 
+  step_tf(medium) %>% 
+  step_normalize(all_predictors())
+
+lasso_spec <- linear_reg(penalty = tune(), mixture = 1) %>% 
+  set_engine('glmnet')
+
+art_wf <- workflow() %>% 
+  add_recipe(art_rec, blueprint = sparse_bp) %>% 
+  add_model(lasso_spec)
+```
+
+
+```{r}
+doParallel::registerDoParallel()
+
+lamda_grid <- grid_regular(penalty(range = c(-3,0)), levels = 20)
+
+
+lasso_rs <- tune_grid(
+  art_wf,
+  resamples = art_folds,
+  grid = lamda_grid
+)
+```
+
+```{r}
+autoplot(lasso_rs)
+show_best(lasso_rs, 'rmse')
+
+best_rmse <- select_best(lasso_rs, 'rmse')
+
+final_lasso <- finalize_workflow(art_wf, best_rmse)
+
+art_final <- last_fit(final_lasso, art_split)
+```
+
+
+
+```{r}
+
+library(vip)
+
+art_vip <- pull_workflow_fit(art_final$.workflow[[1]]) %>% vi()
+
+
+art_vip %>% 
+  group_by(Sign) %>% 
+  slice_max(abs(Importance), n = 20) %>% 
+  ungroup() %>% 
+  mutate(Variable = str_remove(Variable, 'tfidf_medium_'),
+         Importance = abs(Importance),
+         Variable = fct_reorder(Variable, Importance),
+         Sign = if_else(Sign == "POS", "More in later art", "More in earlier art")) %>%
+  ggplot(aes(Importance, Variable, fill = Sign)) +
+  geom_col() +
+  facet_wrap(~Sign, scales = 'free') 
+```
+
+
+```{r}
+collect_predictions(art_final) %>% 
+  ggplot(aes(year, .pred)) + 
+  geom_abline(lty = 2, size = 1.5) +
+  geom_point(size = .5) 
+
+collect_predictions(art_final) %>% 
+  bind_cols(art_test %>% select(medium)) %>% 
+  filter(abs(year)-.pred > 100) %>% arrange(-year)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

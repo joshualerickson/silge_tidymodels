@@ -66,16 +66,15 @@ tidy_yields <- key_crop_yields %>%
                names_to = 'crop', values_to = 'yield') %>% 
   mutate(crop = str_remove(crop, '_tonnes_per_hectare')) %>% 
   filter(crop %in% c('wheat', 'rice', 'maize', 'barley'),
-         entity %in% top_countries,
+         entity %in% 'United States',
          !is.na(yield))
 ```
 
 
 ```{r}
-ty <- tidy_yields %>%
-  ggplot(aes(year, yield, color = entity, group = entity)) + 
-  geom_line(alpha = 0.8, size = 1, show.legend = F,aes(frame = year)) +
-  facet_wrap(~crop)
+ty <- tidy_yields %>% mutate(year2 = year) %>% 
+  ggplot() + 
+  geom_line(aes(year2, yield, color = crop, frame = year)) 
 
 fig <- ggplotly(ty)
 fig
