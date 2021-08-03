@@ -1,0 +1,128 @@
+---
+title: 'Video 28:  Dimensionality Reduction with UN votes'
+author: "Josh Erickson"
+date: "8/1/2021"
+output: html_document
+---
+
+```{r}
+library(tidyverse)
+library(tidymodels)
+library(skimr)
+theme_set(theme_bw())
+
+trace(grDevices::png, quote({
+  if (missing(type) && missing(antialias)) {
+    type <- "cairo-png"
+    antialias <- "subpixel"
+  }
+}), print = FALSE)
+
+library(wesanderson)
+```
+
+Let's build a model from some data for [UN votes #tidytuesday data](https://github.com/rfordatascience/tidytuesday/blob/master/data/2020/2021-03-23/readme.md)
+
+Highlights=  values_fill 
+
+## Explore Data
+
+```{r}
+# Get the Data
+library(countrycode)
+tuesdata <- tidytuesdayR::tt_load('2021-03-23')
+
+
+unvotes <- tuesdata$unvotes
+
+unvotes$continent <- countrycode(sourcevar = unvotes$country,
+                            origin = "country.name",
+                            destination = "continent")
+issues <- tuesdata$issues
+```
+
+```{r}
+unvotes_df <- unvotes %>% 
+  select(country,continent ,rcid, vote) %>% 
+  mutate(vote = factor(vote, levels = c('no', 'abstain', 'yes')),
+         vote = as.numeric(vote),
+         rcid = paste0('rcid_', rcid)) %>% 
+  pivot_wider(names_from = rcid, values_from = vote,
+              values_fill = 2)
+```
+
+
+
+## PCA 
+
+```{r}
+
+pca_rec <- recipe(~., data = unvotes_df) %>% 
+  update_role(c(country, continent), new_role = 'id') %>% 
+  step_normalize(all_predictors()) %>% 
+  step_pca(all_predictors())
+  
+
+pca_prep <- prep(pca_rec)
+
+juice(pca_prep)
+p1 <- bake(pca_prep, new_data = NULL) %>% 
+  filter(!is.na(continent)) %>% 
+  ggplot(aes(PC1, PC2)) +
+  geom_point(aes(color = continent), size = 2.5, fill = 'black') +
+  scale_color_manual(values = wes_palette('Cavalcanti1')) +
+  labs(title = "Dimensionality Reduction with PCA", color = 'Continents')
+```
+
+
+
+
+## PCA with UMAP
+
+```{r}
+library(embed)
+set.seed(123)
+umap_rec <- recipe(~., data = unvotes_df) %>% 
+  update_role(c(continent,country), new_role = 'id') %>% 
+  step_normalize(all_predictors()) %>% 
+  step_umap(all_predictors())
+  
+
+umap_prep <- prep(umap_rec)
+
+juice(umap_prep)
+p2 <- bake(umap_prep, new_data = NULL) %>% 
+  filter(!is.na(continent)) %>% 
+  ggplot(aes(umap_1, umap_2)) +
+  geom_point(aes(color = continent), size = 2.5, fill = 'black') +
+  scale_color_manual(values = wes_palette('Cavalcanti1')) +
+  labs(title = "Dimensionality Reduction with UMAP", color = 'Continents')
+
+library(patchwork)
+p1 + p2 + plot_layout(guides = 'collect')
+
+tidy(pca_prep, 2)
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

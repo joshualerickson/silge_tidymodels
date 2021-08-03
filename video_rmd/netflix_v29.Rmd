@@ -1,0 +1,124 @@
+---
+title: 'Video 29:Netflix'
+author: "Josh Erickson"
+date: "8/2/2021"
+output: html_document
+---
+
+
+```{r}
+library(tidyverse)
+library(tidymodels)
+library(skimr)
+theme_set(theme_bw())
+
+trace(grDevices::png, quote({
+  if (missing(type) && missing(antialias)) {
+    type <- "cairo-png"
+    antialias <- "subpixel"
+  }
+}), print = FALSE)
+
+library(wesanderson)
+```
+
+Let's build a model from some data for [Netflix #tidytuesday data](https://github.com/rfordatascience/tidytuesday/blob/master/data/2020/2021-04-20/readme.md)
+
+Highlights=  unnest_tokens() and then anti_join(get_stopwords()) from the tidytext package is a really nice combo
+## Explore Data
+
+```{r}
+# Get the Data
+library(countrycode)
+tuesdata <- tidytuesdayR::tt_load('2021-04-20')
+
+
+netflix_titles <- tuesdata$netflix_titles
+
+netflix_titles %>% view()
+
+```
+
+```{r}
+netflix_titles %>% 
+  slice_sample(n=10) %>% 
+  pull(description)
+```
+
+```{r}
+library(tidytext)
+
+netflix_titles %>% 
+  unnest_tokens(word, description) %>% 
+  anti_join(get_stopwords()) %>% 
+  count(type, word, sort = TRUE) %>% 
+  group_by(type) %>% 
+  slice_max(n, n = 15) %>% 
+  ungroup() %>% 
+  mutate(word = reorder_within(word, n, type)) %>% 
+  ggplot(aes(n, word, fill = type)) + 
+  geom_col(show.legend = F) +
+  scale_y_reordered() + 
+  facet_wrap(~type, scales = 'free')
+
+
+```
+
+## Build a model
+
+```{r}
+set.seed(123)
+
+netflix_split <- initial_split(data = netflix_titles %>% select(type, description),
+                               strata = type)
+
+netflix_train <- training(netflix_split)
+netflix_test <- testing(netflix_split)
+
+set.seed(232)
+
+netflix_folds <- vfold_cv(netflix_train, strat = type)
+
+
+```
+
+
+```{r}
+library(textrecipes)
+library(themis)
+
+netflix_rec <- recipe(type~description, data = netflix_train) %>% 
+  step_tokenize(description) %>% 
+  step_tokenfilter(description , max_tokens = 1e3) %>% 
+  step_tfidf(description) %>% 
+  step_normalize(all_numeric(), -type) %>% 
+  step_smote(type)
+
+
+svm_spec <- svm_linear() %>% 
+  set_mode('classification') %>% 
+  set_engine('LiblineaR')
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
